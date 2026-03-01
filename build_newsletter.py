@@ -101,6 +101,17 @@ def text_lines(fragment):
     """Return non-empty stripped text lines from an HTML fragment."""
     return [l.strip() for l in strip_tags(fragment).splitlines() if l.strip()]
 
+# Boilerplate phrases that appear on many event pages but add no value to the newsletter.
+# Any description line containing one of these substrings (case-insensitive) is dropped.
+BOILERPLATE = [
+    'This is a discussion meeting for newcomers to AA',
+    'Focus is placed on questions relevant to early sobriety',
+]
+
+def is_boilerplate(line):
+    low = line.lower()
+    return any(p.lower() in low for p in BOILERPLATE)
+
 def xml_safe(text):
     """Make text safe for XML content (after HTML-unescaping)."""
     return (text
@@ -203,7 +214,8 @@ def _parse_event_block(block, today_year):
     desc_m = re.search(
         r"class=['\"][^'\"]*\bdescription\b[^'\"]*['\"][^>]*>(.*?)</div>",
         block, re.DOTALL | re.IGNORECASE)
-    description = text_lines(desc_m.group(1)) if desc_m else []
+    description = [l for l in (text_lines(desc_m.group(1)) if desc_m else [])
+                   if not is_boilerplate(l)]
 
     # ── Venue ──
     venue = []
@@ -244,14 +256,18 @@ def scrape_meeting_changes(html):
     Returns {'new': [...], 'changed': [...]}
     Each entry: {'location', 'day_time', 'title', 'details'}
     """
-    result = {'new': [], 'changed': []}
+    result = {'new': [], 'changed': [], 'closed': []}
 
     for m in re.finditer(r'<div\b[^>]*\bclass=[\'"]([^\'"]*)[\'"][^>]*>', html):
         classes = m.group(1).split()
         if 'meeting-box' not in classes:
             continue
-        kind = ('new'     if 'meeting-new'    in classes else
-                'changed' if 'meeting-change' in classes else None)
+        is_inactive = 'attendance-inactive' in classes
+        if is_inactive:
+            # Recently closed = inactive AND highlighted (meeting-new or meeting-change)
+            kind = 'closed' if ('meeting-new' in classes or 'meeting-change' in classes) else None
+        else:
+            kind = ('new' if 'meeting-new' in classes else None)
         if not kind:
             continue
         block = get_div_block(html, m.start())
@@ -269,7 +285,7 @@ def _parse_meeting_block(block):
         return None
     title = strip_tags(title_m.group(1)).strip()
     # Remove badge text if any
-    title = re.sub(r'\b(?:New|Changed)\b', '', title, flags=re.IGNORECASE).strip()
+    title = re.sub(r'\b(?:New|Changed|Inactive)\b', '', title, flags=re.IGNORECASE).strip()
     if not title:
         return None
 
@@ -724,17 +740,17 @@ def main():
 
         rows.append(make_event_row(date_col, ev['title'], details))
 
-    # ── New meetings section ──
+    # ── New meetings section (bold background on website = meeting-new class only) ──
     if changes['new']:
         rows.append(make_section_header_row('New Meetings'))
         for m in changes['new']:
             rows.append(make_new_meeting_row(
                 m['location'], m['day_time'], m['title'], m['details']))
 
-    # ── Recently changed meetings section ──
-    if changes['changed']:
-        rows.append(make_section_header_row('Recently changed meetings'))
-        for m in changes['changed']:
+    # ── Recently closed meetings section (attendance-inactive + highlighted) ──
+    if changes['closed']:
+        rows.append(make_section_header_row('Meetings recently closed down'))
+        for m in changes['closed']:
             rows.append(make_new_meeting_row(
                 m['location'], m['day_time'], m['title'], m['details']))
 
@@ -802,9 +818,7 @@ def main():
         f'<w:pPr><w:rPr><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr>{SECT0}</w:pPr>'
         f'{image_runs}'
         '</w:p>'
-        '<w:p>'
-        f'<w:pPr>{SECT1}</w:pPr>'
-        '</w:p>'
+        f'{SECT1}'
         '</w:body></w:document>'
     )
 
@@ -816,8 +830,8 @@ def main():
 
     file_data['word/document.xml'] = new_doc.encode('utf-8')
 
-    # Update header dates
-    for hdr in ('word/header2.xml', 'word/header3.xml'):
+    # Update header dates in all header files
+    for hdr in ('word/header1.xml', 'word/header2.xml', 'word/header3.xml', 'word/header4.xml'):
         if hdr in file_data:
             file_data[hdr] = update_header_date(
                 file_data[hdr].decode('utf-8'), monday).encode('utf-8')
@@ -838,7 +852,6 @@ def main():
 
     print(f'\nDone! {len(upcoming)} events, '
           f'{len(changes["new"])} new meetings, '
-          f'{len(changes["changed"])} changed, '
           f'{len(image_store)} flyer images.')
     print(f'Written to {dst_name}')
 
