@@ -8,14 +8,14 @@ Run every Saturday/Sunday with no edits:
 
 Output: aatimes_YYYYMMDD.docx  (YYYYMMDD = upcoming Monday)
 """
-import zipfile, re, os, io, urllib.request
+import zipfile, re, os, io, urllib.request, urllib.parse
 from datetime import date, timedelta
 from html import unescape as html_unescape
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC      = os.path.join(BASE_DIR, 'sampleNewsletter.docx')
 EVENTS_URL   = 'https://aatimes.org.au/events/'
-MEETINGS_URL = 'https://aatimes.org.au/meetings/'
+CHANGES_URL  = 'https://aatimes.org.au/changes'
 UA = {'User-Agent': 'Mozilla/5.0 (compatible; AATimes-builder/2.0)'}
 
 MONTH_MAP = {
@@ -97,9 +97,40 @@ def strip_tags(fragment, br_to_newline=True):
     fragment = re.sub(r'<[^>]+>', ' ', fragment)
     return html_unescape(fragment)
 
+REGISTER_RE = re.compile(r'\b(?:register|join here|sign up)\b', re.IGNORECASE)
+
+def shorten_url(url):
+    """Return a TinyURL for the given URL, or the original URL on failure."""
+    try:
+        api = 'https://tinyurl.com/api-create.php?url=' + urllib.parse.quote(url, safe='')
+        req = urllib.request.Request(api, headers=UA)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            short = r.read().decode('utf-8').strip()
+        return short if short.startswith('http') else url
+    except Exception:
+        return url
+
+def process_register_links(fragment):
+    """
+    Replace <a href="URL">...register/join here/sign up...</a> with
+    'register: <tinyurl>'.  Non-matching links are left for strip_tags.
+    """
+    def _replace(m):
+        href = m.group(1)
+        text = strip_tags(m.group(2))
+        if REGISTER_RE.search(text):
+            return f'register: {shorten_url(href)}'
+        return text
+    return re.sub(
+        r'<a\b[^>]*\bhref=[\'"]([^\'"]+)[\'"][^>]*>(.*?)</a>',
+        _replace,
+        fragment,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
 def text_lines(fragment):
     """Return non-empty stripped text lines from an HTML fragment."""
-    return [l.strip() for l in strip_tags(fragment).splitlines() if l.strip()]
+    return [l.strip() for l in strip_tags(process_register_links(fragment)).splitlines() if l.strip()]
 
 # Boilerplate phrases that appear on many event pages but add no value to the newsletter.
 # Any description line containing one of these substrings (case-insensitive) is dropped.
@@ -250,10 +281,10 @@ def _parse_event_block(block, today_year):
 
 # ── Meetings page scraper ─────────────────────────────────────────────────────
 
-def scrape_meeting_changes(html):
+def scrape_meeting_changes(html, debug=False):
     """
     Parse new and changed meetings from /meetings/.
-    Returns {'new': [...], 'changed': [...]}
+    Returns {'new': [...], 'changed': [...], 'closed': [...]}
     Each entry: {'location', 'day_time', 'title', 'details'}
     """
     result = {'new': [], 'changed': [], 'closed': []}
@@ -262,16 +293,28 @@ def scrape_meeting_changes(html):
         classes = m.group(1).split()
         if 'meeting-box' not in classes:
             continue
-        is_inactive = 'attendance-inactive' in classes
-        if is_inactive:
-            # Recently closed = inactive AND highlighted (meeting-new or meeting-change)
-            kind = 'closed' if ('meeting-new' in classes or 'meeting-change' in classes) else None
+        if debug:
+            print(f'  [meeting-box classes] {classes}')
+        if 'meeting-old' in classes:
+            kind = 'closed'
+        elif 'meeting-new' in classes:
+            kind = 'new'
+        elif 'meeting-change' in classes:
+            kind = 'changed'
         else:
-            kind = ('new' if 'meeting-new' in classes else None)
+            kind = None
         if not kind:
             continue
         block = get_div_block(html, m.start())
         entry = _parse_meeting_block(block)
+        if debug:
+            if entry:
+                print(f'    → {kind}: parsed ok — "{entry["title"][:50]}"')
+            else:
+                # Show which regex failed by re-running checks
+                t = re.search(r'<h4\b[^>]*>.*?<a[^>]*>(.*?)</a>', block, re.DOTALL | re.IGNORECASE)
+                dt = re.search(r"class=['\"]day_time['\"][^>]*>.*?<a[^>]*>(.*?)</a>", block, re.DOTALL | re.IGNORECASE)
+                print(f'    → {kind}: PARSE FAILED (title={bool(t)}, day_time={bool(dt)})')
         if entry:
             result[kind].append(entry)
 
@@ -684,14 +727,14 @@ def main():
     print(f'  {len(upcoming)} upcoming from {fmt_date(monday)} (capped at ~2 pages).')
 
     # ── Fetch and parse meeting changes ──
-    print('Fetching meeting changes from aatimes.org.au/meetings/ ...')
+    print('Fetching meeting changes from aatimes.org.au/changes ...')
     try:
-        meetings_html = fetch(MEETINGS_URL)
-        changes = scrape_meeting_changes(meetings_html)
-        print(f'  New: {len(changes["new"])},  Changed: {len(changes["changed"])}')
+        meetings_html = fetch(CHANGES_URL)
+        changes = scrape_meeting_changes(meetings_html, debug='--debug-meetings' in __import__('sys').argv)
+        print(f'  New: {len(changes["new"])},  Changed: {len(changes["changed"])},  Closed: {len(changes["closed"])}')
     except Exception as e:
         print(f'  ERROR fetching meetings: {e}')
-        changes = {'new': [], 'changed': []}
+        changes = {'new': [], 'changed': [], 'closed': []}
 
     # ── Download flyer images (up to 6 for page 2 grid) ──
     print('Downloading flyer images ...')
@@ -744,6 +787,13 @@ def main():
     if changes['new']:
         rows.append(make_section_header_row('New Meetings'))
         for m in changes['new']:
+            rows.append(make_new_meeting_row(
+                m['location'], m['day_time'], m['title'], m['details']))
+
+    # ── Recently changed meetings section ──
+    if changes['changed']:
+        rows.append(make_section_header_row('Meetings changed recently'))
+        for m in changes['changed']:
             rows.append(make_new_meeting_row(
                 m['location'], m['day_time'], m['title'], m['details']))
 
