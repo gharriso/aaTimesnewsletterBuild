@@ -283,7 +283,8 @@ def _parse_event_block(block, today_year):
 
 def scrape_meeting_changes(html, debug=False):
     """
-    Parse new and changed meetings from /meetings/.
+    Parse new and changed meetings from /changes.
+    Only includes meetings with the 'recent' class (bold background).
     Returns {'new': [...], 'changed': [...], 'closed': [...]}
     Each entry: {'location', 'day_time', 'title', 'details'}
     """
@@ -292,6 +293,11 @@ def scrape_meeting_changes(html, debug=False):
     for m in re.finditer(r'<div\b[^>]*\bclass=[\'"]([^\'"]*)[\'"][^>]*>', html):
         classes = m.group(1).split()
         if 'meeting-box' not in classes:
+            continue
+        # Only include bold-background (recently updated) meetings
+        if 'recent' not in classes:
+            if debug:
+                print(f'  [meeting-box classes] {classes}  → SKIPPED (not recent)')
             continue
         if debug:
             print(f'  [meeting-box classes] {classes}')
@@ -306,15 +312,13 @@ def scrape_meeting_changes(html, debug=False):
         if not kind:
             continue
         block = get_div_block(html, m.start())
-        entry = _parse_meeting_block(block)
+        parser = _parse_meeting_old_block if kind == 'closed' else _parse_meeting_block
+        entry = parser(block)
         if debug:
             if entry:
                 print(f'    → {kind}: parsed ok — "{entry["title"][:50]}"')
             else:
-                # Show which regex failed by re-running checks
-                t = re.search(r'<h4\b[^>]*>.*?<a[^>]*>(.*?)</a>', block, re.DOTALL | re.IGNORECASE)
-                dt = re.search(r"class=['\"]day_time['\"][^>]*>.*?<a[^>]*>(.*?)</a>", block, re.DOTALL | re.IGNORECASE)
-                print(f'    → {kind}: PARSE FAILED (title={bool(t)}, day_time={bool(dt)})')
+                print(f'    → {kind}: PARSE FAILED')
         if entry:
             result[kind].append(entry)
 
@@ -372,6 +376,55 @@ def _parse_meeting_block(block):
         details.append(venue_name)
     if address:
         details.append(address)
+
+    return {
+        'location': location,
+        'day_time': [day_time_str],
+        'title':    title,
+        'details':  details,
+    }
+
+
+def _parse_meeting_old_block(block):
+    """
+    Parse a meeting-old (no longer functioning) div → dict or None.
+    These blocks have a different structure: title is plain text in <h4>,
+    and day/time/venue are in a single 'Was ...' line inside col-md-8.
+    """
+    # Title: <h4>Title text <span ...>badge</span></h4>
+    h4_m = re.search(r'<h4\b[^>]*>(.*?)</h4>', block, re.DOTALL | re.IGNORECASE)
+    if not h4_m:
+        return None
+    title = strip_tags(h4_m.group(1)).strip()
+    # Remove badge text (e.g. from <span class='badge ...'>)
+    title = re.sub(r'\b(?:New|Changed|Inactive)\b', '', title, flags=re.IGNORECASE).strip()
+    if not title:
+        return None
+
+    # Day/time/venue: "Was Wednesday 4:30pm AEDT, Venue Name, Address VIC 3197"
+    col_m = re.search(r'class=["\']col-md-8["\'][^>]*>(.*?)</div>', block, re.DOTALL | re.IGNORECASE)
+    raw = re.sub(r'\s+', ' ', strip_tags(col_m.group(1))).strip() if col_m else ''
+    # Strip leading "Was "
+    raw = re.sub(r'^Was\s+', '', raw, flags=re.IGNORECASE).strip()
+    # Strip timezone
+    raw = re.sub(r'\b(?:AEDT|AEST)\b', '', raw).strip()
+
+    # Split "Wednesday 4:30pm, Venue, Address" at first comma after the time
+    day_m = re.search(r'(\w+day)', raw, re.IGNORECASE)
+    time_s = extract_time(raw)
+    day_time_str = ' '.join(filter(None, [
+        day_m.group(1) if day_m else '',
+        time_s,
+    ]))
+
+    # Venue: everything after "Wednesday 4:30pm, "
+    venue_part = re.sub(r'^\w+day\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)\s*,?\s*', '', raw, flags=re.IGNORECASE).strip()
+    venue_part = venue_part.strip(', ')
+    details = [venue_part] if venue_part else []
+
+    # Location: suburb from venue_part
+    suburb_m = re.search(r'([A-Z][a-zA-Z\s]+)\s+VIC\b', venue_part)
+    location = suburb_m.group(1).strip() if suburb_m else venue_part.split(',')[0].strip()
 
     return {
         'location': location,
@@ -738,7 +791,7 @@ def main():
 
     # ── Download flyer images (up to 6 for page 2 grid) ──
     print('Downloading flyer images ...')
-    flyer_events  = [ev for ev in upcoming if ev['image_url']][:6]
+    flyer_events  = [ev for ev in upcoming if ev['image_url']][:9]
     image_store   = {}   # rId → bytes
     image_meta    = {}   # rId → (fn, wp, hp)
 
@@ -797,16 +850,33 @@ def main():
             rows.append(make_new_meeting_row(
                 m['location'], m['day_time'], m['title'], m['details']))
 
-    # ── Recently closed meetings section (attendance-inactive + highlighted) ──
+    # ── Meetings no longer functioning section ──
     if changes['closed']:
-        rows.append(make_section_header_row('Meetings recently closed down'))
+        rows.append(make_section_header_row('Meetings no longer functioning'))
         for m in changes['closed']:
             rows.append(make_new_meeting_row(
                 m['location'], m['day_time'], m['title'], m['details']))
 
     # ── Build page-2 image anchor XML ──
-    image_runs   = ''
-    row1_max_cy  = 0
+    ROW_GAP = 100000  # EMU gap between rows
+
+    # Pre-compute max image height per row (rows of 3 columns)
+    row_max_cy = {}
+    for i, ev in enumerate(flyer_events):
+        if not ev.get('has_flyer'):
+            continue
+        _, cy = scale_emu(ev['_wp'], ev['_hp'])
+        row_idx = i // 3
+        row_max_cy[row_idx] = max(row_max_cy.get(row_idx, 0), cy)
+
+    # Cumulative V start position for each row
+    row_v_start = {}
+    v_cursor = ROW1_V
+    for row_idx in sorted(row_max_cy):
+        row_v_start[row_idx] = v_cursor
+        v_cursor += row_max_cy[row_idx] + ROW_GAP
+
+    image_runs = ''
     for i, ev in enumerate(flyer_events):
         if not ev.get('has_flyer'):
             continue
@@ -815,11 +885,7 @@ def main():
         col_idx   = i % 3
         row_idx   = i // 3
         h_emu     = COL_H[col_idx]
-        if row_idx == 0:
-            v_emu = ROW1_V
-            row1_max_cy = max(row1_max_cy, cy)
-        else:
-            v_emu = ROW1_V + row1_max_cy + 100000
+        v_emu     = row_v_start[row_idx]
         anchor_xml = make_image_anchor(h_emu, v_emu, cx, cy, rId, i)
         image_runs += (
             f'<w:r><w:rPr><w:noProof/><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr>'
