@@ -436,7 +436,7 @@ def _parse_meeting_old_block(block):
 
 # ── Image downloading ─────────────────────────────────────────────────────────
 
-MAX_EVENT_LINES = 220   # approx 2 pages of 2-column A4 at 9pt (~110 lines/page)
+MAX_EVENT_LINES = 110   # approx 1 page of overflow after page 1 (~110 lines/page at 9pt)
 
 IMG_W_EMU = 2238000   # ~2.45" width per image column
 COL_H     = [-25400, 2270125, 4625340]   # 3-column H positions (EMU from margin)
