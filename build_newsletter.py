@@ -377,9 +377,24 @@ def _parse_meeting_block(block):
     if address:
         details.append(address)
 
+    # Extract "was" values from <em>_(Was ...)_</em> tags (present on changed meetings)
+    day_time_list = [day_time_str]
+    for em_m in re.finditer(r'<em[^>]*>(.*?)</em>', block, re.DOTALL | re.IGNORECASE):
+        em_text = strip_tags(em_m.group(1), br_to_newline=False).strip()
+        was_m = re.search(r'[Ww]as\s+(.+?)[\s_)]*$', em_text)
+        if not was_m:
+            continue
+        was_val = was_m.group(1).strip().rstrip('_) ').strip()
+        if not was_val:
+            continue
+        if extract_time(was_val) and len(was_val) < 25:
+            day_time_list.append(f'(was {was_val})')
+        else:
+            details.append(f'Was {was_val}')
+
     return {
         'location': location,
-        'day_time': [day_time_str],
+        'day_time': day_time_list,
         'title':    title,
         'details':  details,
     }
@@ -791,7 +806,23 @@ def main():
 
     # ── Download flyer images (up to 6 for page 2 grid) ──
     print('Downloading flyer images ...')
-    flyer_events  = [ev for ev in upcoming if ev['image_url']][:9]
+    seen_flyer_titles = set()
+    flyer_events = []
+    for ev in upcoming:
+        if not ev['image_url']:
+            continue
+        # Strip subtitle after " – " / " - " so recurring meetings with weekly
+        # sub-topics (e.g. "Mill Park Beginners Meeting – Step Five") are treated
+        # as the same series. Also deduplicate by image URL for identical flyers.
+        base = re.split(r'\s+[–—-]\s+', ev['title'])[0].strip().lower()
+        url_key = ev['image_url'].strip()
+        if base in seen_flyer_titles or url_key in seen_flyer_titles:
+            continue
+        seen_flyer_titles.add(base)
+        seen_flyer_titles.add(url_key)
+        flyer_events.append(ev)
+        if len(flyer_events) >= 9:
+            break
     image_store   = {}   # rId → bytes
     image_meta    = {}   # rId → (fn, wp, hp)
 
