@@ -150,6 +150,14 @@ def xml_safe(text):
             .replace('<', '&lt;')
             .replace('>', '&gt;'))
 
+_para_id_counter = 0
+
+def new_para_id():
+    """Return a unique 8-hex-digit paraId/textId for w14 attributes."""
+    global _para_id_counter
+    _para_id_counter += 1
+    return f'{_para_id_counter:08X}'
+
 def get_div_block(html, pos):
     """
     Starting at pos (where '<div' begins), return the complete div block
@@ -551,7 +559,7 @@ def make_header_row(text):
     """Grey month banner."""
     t = xml_safe(text)
     return (
-        f'<w:tr w14:paraId="AAAAAAAA" w14:textId="77777777">'
+        f'<w:tr w14:paraId="{new_para_id()}" w14:textId="77777777">'
         f'<w:trPr><w:cantSplit/></w:trPr><w:tc><w:tcPr>'
         f'<w:tcW w:w="5308" w:type="dxa"/><w:gridSpan w:val="4"/>'
         f'<w:tcBorders>'
@@ -604,7 +612,7 @@ def make_event_row(date_lines, title, details, has_flyer=False):
             event_paras += f'<w:p><w:r><w:t>{xml_safe(line)}</w:t></w:r></w:p>'
 
     return (
-        f'<w:tr w14:paraId="BBBBBBBB" w14:textId="77777777">'
+        f'<w:tr w14:paraId="{new_para_id()}" w14:textId="77777777">'
         f'<w:trPr><w:cantSplit/></w:trPr>'
         f'<w:tc><w:tcPr><w:tcW w:w="1668" w:type="dxa"/>'
         f'<w:gridSpan w:val="2"/></w:tcPr>{date_paras}</w:tc>'
@@ -617,7 +625,7 @@ def make_section_header_row(text):
     """Grey section header (New Meetings / Recently changed / etc.) – 8pt."""
     t = xml_safe(text)
     return (
-        f'<w:tr w14:paraId="CCCCCCCC" w14:textId="77777777">'
+        f'<w:tr w14:paraId="{new_para_id()}" w14:textId="77777777">'
         f'<w:tblPrEx><w:tblBorders>'
         f'<w:top w:val="single" w:sz="6" w:space="0" w:color="auto"/>'
         f'<w:bottom w:val="single" w:sz="6" w:space="0" w:color="auto"/>'
@@ -671,7 +679,7 @@ def make_new_meeting_row(location, day_time, title, details):
             )
 
     return (
-        f'<w:tr w14:paraId="DDDDDDDD" w14:textId="77777777">'
+        f'<w:tr w14:paraId="{new_para_id()}" w14:textId="77777777">'
         f'<w:trPr><w:cantSplit/></w:trPr>'
         f'<w:tc><w:tcPr><w:tcW w:w="1365" w:type="dxa"/>{BORDERS}{FILL}</w:tcPr>'
         f'<w:p><w:pPr><w:pStyle w:val="AADate"/><w:rPr>{SZ}</w:rPr></w:pPr>'
@@ -992,6 +1000,16 @@ def main():
         rel = f'<Relationship Id="{rId}" Type="{IMG_REL}" Target="media/{fn}"/>'
         rels_xml = rels_xml.replace('</Relationships>', rel + '</Relationships>')
     file_data['word/_rels/document.xml.rels'] = rels_xml.encode('utf-8')
+
+    # Add jpeg content type if not already present (template only declares png)
+    if image_store:
+        ct_xml = file_data['[Content_Types].xml'].decode('utf-8')
+        if 'Extension="jpg"' not in ct_xml and 'Extension="jpeg"' not in ct_xml:
+            ct_xml = ct_xml.replace(
+                '</Types>',
+                '<Default Extension="jpg" ContentType="image/jpeg"/></Types>'
+            )
+            file_data['[Content_Types].xml'] = ct_xml.encode('utf-8')
 
     with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zout:
         for name, data in file_data.items():
