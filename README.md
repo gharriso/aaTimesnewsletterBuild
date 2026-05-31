@@ -4,8 +4,10 @@ Automatically generates the weekly AATimes newsletter `.docx` by scraping event 
 
 ## Requirements
 
-- Python 3.x (standard library only — no pip installs needed)
+- Python 3.8+ (standard library only — no third-party packages needed)
 - `sampleNewsletter.docx` — the template file (included in this repo)
+
+A `requirements.txt` is included for tooling compatibility; it contains no installable packages.
 
 ## Usage
 
@@ -19,8 +21,8 @@ The script will:
 
 1. Calculate the upcoming Monday's date automatically
 2. Scrape all events from aatimes.org.au/events/
-3. Scrape new and changed meetings from aatimes.org.au/meetings/
-4. Download flyer images for events that have them (up to 6)
+3. Scrape new and changed meetings from aatimes.org.au/changes
+4. Download flyer images for events that have them (up to 9)
 5. Build a formatted two-page events section followed by a flyer image page
 6. Update the date in the newsletter header
 7. Write output to `aatimesYYYYMMDD.docx`
