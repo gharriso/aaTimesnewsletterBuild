@@ -27,7 +27,7 @@ The script will:
 6. Update the date in the newsletter header
 7. Write output to `aatimesYYYYMMDD.docx`
 
-No manual editing is required.
+Then edit the output file so that everything fits on two pages 
 
 ## Output
 
