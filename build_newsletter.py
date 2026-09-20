@@ -7,10 +7,21 @@ Run every Saturday/Sunday with no edits:
     python3 build_newsletter.py
 
 Output: aatimes_YYYYMMDD.docx  (YYYYMMDD = upcoming Monday)
+
+If you forget to run it over the weekend, use one of these instead of
+letting it jump ahead to the following Monday:
+
+    python3 build_newsletter.py --previous-week
+    python3 build_newsletter.py --date 2026-09-13   # pretend it's this date
 """
-import zipfile, re, os, io, urllib.request, urllib.parse
+import argparse, zipfile, re, os, io, urllib.request, urllib.parse
 from datetime import date, timedelta
 from html import unescape as html_unescape
+
+_EFFECTIVE_TODAY = None   # set from --date in main(); None = use the real date
+
+def effective_today():
+    return _EFFECTIVE_TODAY or date.today()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC      = os.path.join(BASE_DIR, 'sampleNewsletter.docx')
@@ -33,7 +44,7 @@ FULL_MONTHS = [
 
 def next_monday():
     """Return the date of the upcoming Monday."""
-    today = date.today()
+    today = effective_today()
     days  = (7 - today.weekday()) % 7 or 7
     return today + timedelta(days=days)
 
@@ -56,7 +67,7 @@ def parse_date(text, today_year=None):
     Returns None on failure.
     """
     if today_year is None:
-        today_year = date.today().year
+        today_year = effective_today().year
     m = re.search(r'(\d{1,2})(?:st|nd|rd|th)?\s+(\w{3,9})(?:\s+(\d{4}))?',
                   text, re.IGNORECASE)
     if not m:
@@ -66,7 +77,7 @@ def parse_date(text, today_year=None):
     if not mon:
         return None
     year  = int(m.group(3)) if m.group(3) else today_year
-    today = date.today()
+    today = effective_today()
     try:
         d = date(year, mon, day)
         # If the resulting date is more than 6 months in the past, try next year
@@ -190,7 +201,7 @@ def scrape_events(html):
                            title, description, venue, image_url
     """
     events = []
-    today_year = date.today().year
+    today_year = effective_today().year
 
     # Find every <div that has both 'row' and 'event' in its class attribute
     for m in re.finditer(r'<div\b[^>]*\bclass=[\'"]([^\'"]*)[\'"][^>]*>', html):
@@ -763,8 +774,38 @@ def estimate_event_lines(ev):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def parse_args():
+    p = argparse.ArgumentParser(
+        description='Build the AATimes weekly newsletter.')
+    p.add_argument(
+        '--date', metavar='YYYY-MM-DD',
+        help="Pretend it's this date when working out the target Monday "
+             "(default: today). Use this if you missed running over the "
+             "weekend and want to reproduce that run, e.g. --date 2026-09-13 "
+             "on a Monday to build as if it were still Sunday.")
+    p.add_argument(
+        '--previous-week', action='store_true',
+        help='Build for last week\'s Monday instead of the upcoming one '
+             '(shorthand for catching up after forgetting a weekend run).')
+    p.add_argument(
+        '--debug-meetings', action='store_true',
+        help=argparse.SUPPRESS)
+    return p.parse_args()
+
+
 def main():
+    global _EFFECTIVE_TODAY
+    args = parse_args()
+
+    if args.date:
+        try:
+            _EFFECTIVE_TODAY = date.fromisoformat(args.date)
+        except ValueError:
+            raise SystemExit(f"--date must be YYYY-MM-DD, got {args.date!r}")
+
     monday = next_monday()
+    if args.previous_week:
+        monday -= timedelta(days=7)
     dst_name = f'aatimes{monday.strftime("%Y%m%d")}.docx'
     dst      = os.path.join(BASE_DIR, dst_name)
 
@@ -806,7 +847,7 @@ def main():
     print('Fetching meeting changes from aatimes.org.au/changes ...')
     try:
         meetings_html = fetch(CHANGES_URL)
-        changes = scrape_meeting_changes(meetings_html, debug='--debug-meetings' in __import__('sys').argv)
+        changes = scrape_meeting_changes(meetings_html, debug=args.debug_meetings)
         print(f'  New: {len(changes["new"])},  Changed: {len(changes["changed"])},  Closed: {len(changes["closed"])}')
     except Exception as e:
         print(f'  ERROR fetching meetings: {e}')

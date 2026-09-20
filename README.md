@@ -29,6 +29,25 @@ The script will:
 
 Then edit the output file so that everything fits on two pages 
 
+## Catching up on a missed weekend run
+
+If you forget to run it on Saturday/Sunday, running it plain on Monday (or later)
+jumps ahead to the *following* Monday instead of the one you meant to send. Use
+one of these instead:
+
+```
+python3 build_newsletter.py --previous-week
+```
+
+Builds for last week's Monday instead of the upcoming one.
+
+```
+python3 build_newsletter.py --date 2026-09-13
+```
+
+Runs as if today were the given date (e.g. the Sunday you meant to run it),
+so the target Monday and event filtering come out the same as they would have.
+
 ## Output
 
 - **Pages 1–2**: Upcoming events table, covering roughly two A4 pages
