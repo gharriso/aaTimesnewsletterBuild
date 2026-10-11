@@ -341,7 +341,77 @@ def scrape_meeting_changes(html, debug=False):
         if entry:
             result[kind].append(entry)
 
+    for kind in result:
+        before = len(result[kind])
+        result[kind] = condense_meetings_by_day(result[kind])
+        if debug and len(result[kind]) != before:
+            print(f'  [{kind}] condensed {before} → {len(result[kind])} entries by day of week')
+
     return result
+
+DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+DAY_RE    = re.compile(r'\b(' + '|'.join(DAY_NAMES) + r')\b', re.IGNORECASE)
+
+def _day_index(name):
+    return DAY_NAMES.index(name.capitalize())
+
+def condense_days(days):
+    """['Monday', 'Tuesday', 'Wednesday', 'Friday'] → 'Mon-Wed, Fri'"""
+    idxs = sorted({_day_index(d) for d in days})
+    runs = []
+    for i in idxs:
+        if runs and i == runs[-1][-1] + 1:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+    parts = []
+    for run in runs:
+        abbrs = [DAY_NAMES[i][:3] for i in run]
+        if len(run) >= 3:
+            parts.append(f'{abbrs[0]}-{abbrs[-1]}')
+        else:
+            parts.extend(abbrs)
+    return ', '.join(parts)
+
+def condense_meetings_by_day(entries):
+    """
+    Merge meeting entries that are identical apart from the day(s) of the week
+    into a single entry, e.g. seven daily entries → one with 'Mon-Sun'.
+    """
+    def fields(e):
+        return [e['location'], e['title'], *e['day_time'], *e['details']]
+
+    groups = {}   # key → list of entries, in first-seen order
+    for e in entries:
+        key = (len(e['day_time']), len(e['details']),
+               tuple(DAY_RE.sub('{DAY}', f) for f in fields(e)))
+        groups.setdefault(key, []).append(e)
+
+    out = []
+    for group in groups.values():
+        if len(group) == 1:
+            out.append(group[0])
+            continue
+        # Day names found at each position, per entry
+        found = [[m.group(1) for f in fields(e) for m in DAY_RE.finditer(f)] for e in group]
+        labels = []
+        for pos in range(len(found[0])):
+            days = [f[pos] for f in found]
+            # Same day everywhere (e.g. part of a venue name) → leave untouched
+            if len({_day_index(d) for d in days}) == 1:
+                labels.append(days[0])
+            else:
+                labels.append(condense_days(days))
+        it = iter(labels)
+        merged = [DAY_RE.sub(lambda m: next(it), f) for f in fields(group[0])]
+        n_dt = len(group[0]['day_time'])
+        out.append({
+            'location': merged[0],
+            'title':    merged[1],
+            'day_time': merged[2:2 + n_dt],
+            'details':  merged[2 + n_dt:],
+        })
+    return out
 
 def _parse_meeting_block(block):
     """Parse one meeting-box div → dict or None."""
