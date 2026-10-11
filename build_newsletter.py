@@ -261,10 +261,16 @@ def _parse_event_block(block, today_year):
         return None
 
     # ── Description ──
+    # Descriptions can contain nested divs (e.g. Zoom details), so take the
+    # whole balanced block and treat each closing </div> as a line break.
     desc_m = re.search(
-        r"class=['\"][^'\"]*\bdescription\b[^'\"]*['\"][^>]*>(.*?)</div>",
-        block, re.DOTALL | re.IGNORECASE)
-    description = [l for l in (text_lines(desc_m.group(1)) if desc_m else [])
+        r"<div\b[^>]*class=['\"][^'\"]*\bdescription\b[^'\"]*['\"][^>]*>",
+        block, re.IGNORECASE)
+    desc_html = ''
+    if desc_m:
+        desc_html = get_div_block(block, desc_m.start())[desc_m.end() - desc_m.start():-len('</div>')]
+        desc_html = re.sub(r'</div>', '<br>', desc_html, flags=re.IGNORECASE)
+    description = [l for l in (text_lines(desc_html) if desc_html else [])
                    if not is_boilerplate(l)]
 
     # ── Venue ──
